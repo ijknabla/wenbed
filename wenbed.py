@@ -75,7 +75,7 @@ def iter_platform(
     platform: Platform,
 ) -> "Iterator[tuple[Version, Architecture]]":
     version_architecture = re.compile(
-        r"(\d+)\.(\d+)\.(\d+)\-" rf"({'|'.join(a.name for a in Architecture)})"
+        rf"(\d+)\.(\d+)\.(\d+)\-({'|'.join(a.name for a in Architecture)})"
     )
     for word in platform.split(","):
         matched = version_architecture.fullmatch(word)
