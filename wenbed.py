@@ -2,7 +2,7 @@ import argparse
 import enum
 import re
 import sys
-from asyncio import create_subprocess_exec, get_event_loop
+from asyncio import create_subprocess_exec, gather, get_event_loop
 from functools import total_ordering
 from subprocess import PIPE, CalledProcessError, run
 from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
@@ -51,8 +51,10 @@ if TYPE_CHECKING:
 
 async def main() -> None:
     args = parse_args()
-    for v, a in sorted(set(iter_platform(args.platform))):
-        print(get_embed_uri(v, a))
+
+    await gather(
+        *(build(v, a) for v, a in set(iter_platform(args.platform))), return_exceptions=True
+    )
 
 
 def parse_args() -> "Namespace":
@@ -80,6 +82,10 @@ def iter_platform(
         micro = int(matched.group(3))
         architecture = Architecture[matched.group(4)]
         yield Version(major=major, minor=minor, micro=micro), architecture
+
+
+async def build(version: Version, architecture: Architecture) -> None:
+    print(get_embed_uri(version, architecture))
 
 
 def get_embed_uri(version: Version, architecture: Architecture) -> URI:
