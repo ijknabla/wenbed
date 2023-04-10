@@ -1,9 +1,14 @@
 import argparse
 import enum
 import re
+import sys
 from functools import total_ordering
 from subprocess import PIPE, run
 from typing import TYPE_CHECKING, NamedTuple, NewType, cast
+
+if sys.version_info < (3, 6, 1):
+    raise RuntimeError("wenbed requires python>=3.6.1")
+
 
 Platform = NewType("Platform", str)
 
