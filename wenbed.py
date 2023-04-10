@@ -1,13 +1,31 @@
+import argparse
 import re
 from subprocess import PIPE, run
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from typing import Final
+    from collections.abc import Sequence
+    from typing import Final, Protocol
+
+    class Namespace(Protocol):
+        arch: Sequence[str]
+        package: Sequence[str]
+        output: str
+        verbose: int
 
 
 def main() -> None:
-    ...
+    print(parse_args())
+
+
+def parse_args() -> "Namespace":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-a", "--arch", nargs="+", required=True)
+    parser.add_argument("-p", "--package", nargs="+", required=True)
+    parser.add_argument("-o", "--output", nargs="?", default=".")
+    parser.add_argument("-v", "--verbose", action="count")
+
+    return cast("Namespace", parser.parse_args())
 
 
 def detect_windows_encoding(chcp: str) -> str:
