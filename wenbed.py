@@ -1,9 +1,10 @@
 import argparse
+import asyncio
 import enum
 import os
 import re
 import sys
-from asyncio import create_subprocess_exec, gather, get_event_loop
+from asyncio import create_subprocess_exec, gather, get_event_loop, set_event_loop
 from contextlib import ExitStack
 from functools import total_ordering
 from io import BytesIO
@@ -287,5 +288,7 @@ CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        set_event_loop(asyncio.ProactorEventLoop())
     loop = get_event_loop()
     loop.run_until_complete(main())
