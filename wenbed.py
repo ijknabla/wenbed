@@ -2,14 +2,16 @@ import argparse
 import enum
 import re
 import sys
+from asyncio import get_event_loop
 from functools import total_ordering
 from subprocess import PIPE, run
-from typing import TYPE_CHECKING, NamedTuple, NewType, cast
+from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
 
 if sys.version_info < (3, 6, 1):
     raise RuntimeError("wenbed requires python>=3.6.1")
 
 
+T = TypeVar("T")
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
 
@@ -47,7 +49,7 @@ if TYPE_CHECKING:
         pip_argument: Sequence[str]
 
 
-def main() -> None:
+async def main() -> None:
     args = parse_args()
     for v, a in sorted(set(iter_platform(args.platform))):
         print(get_embed_uri(v, a))
@@ -163,4 +165,5 @@ CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
 
 
 if __name__ == "__main__":
-    main()
+    loop = get_event_loop()
+    loop.run_until_complete(main())
