@@ -4,11 +4,14 @@ import re
 import sys
 from asyncio import create_subprocess_exec, gather, get_event_loop
 from functools import total_ordering
+from io import BytesIO
 from pathlib import Path
 from shutil import which
 from subprocess import PIPE, CalledProcessError
-from tempfile import gettempdir
+from tempfile import TemporaryDirectory, gettempdir
 from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
+from urllib.request import urlopen
+from zipfile import ZipFile
 
 if sys.version_info < (3, 6, 1):
     raise RuntimeError("wenbed requires python>=3.6.1")
@@ -89,8 +92,15 @@ def iter_platform(
 
 
 async def build(version: Version, architecture: Architecture) -> None:
-    print(await get_temp_path())
-    print(get_embed_uri(version, architecture))
+    temp = await get_temp_path()
+    cache = temp / f"wenbed/versions/{version}/{get_embed_name(version, architecture)}"
+    if not cache.exists():
+        embed_uri = get_embed_uri(version, architecture)
+        with TemporaryDirectory(dir=temp) as tmp:
+            with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
+                archive.extractall(tmp)
+    else:
+        raise NotImplementedError()
 
 
 async def get_temp_path() -> Path:
@@ -156,10 +166,19 @@ async def windows2posix(wslpath: str, path: str, encoding: str) -> Path:
     return Path(stdout)
 
 
+def get_embed_name(version: Version, architecture: Architecture) -> str:
+    return f"python-{version}-embed-{architecture}.zip"
+
+
 def get_embed_uri(version: Version, architecture: Architecture) -> URI:
     return URI(
-        f"https://www.python.org/ftp/python/{version}/python-{version}-embed-{architecture}.zip"
+        f"https://www.python.org/ftp/python/{version}/{get_embed_name(version, architecture)}"
     )
+
+
+def download(uri: URI) -> bytes:
+    with urlopen(uri) as response:
+        return cast(bytes, response.read())
 
 
 CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
