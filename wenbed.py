@@ -1,9 +1,28 @@
 import argparse
+import enum
 import re
+from functools import total_ordering
 from subprocess import PIPE, run
-from typing import TYPE_CHECKING, NewType, cast
+from typing import TYPE_CHECKING, NamedTuple, NewType, cast
 
 Platform = NewType("Platform", str)
+
+
+class Version(NamedTuple):
+    major: int
+    minor: int
+    micro: int
+
+
+@total_ordering
+class Architecture(enum.Enum):
+    win32 = enum.auto()
+    amd64 = enum.auto()
+    arm64 = enum.auto()
+
+    def __lt__(self, other: "Architecture") -> bool:
+        return self.value < other.value
+
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
