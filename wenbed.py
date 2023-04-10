@@ -1,8 +1,10 @@
 import argparse
 import enum
+import os
 import re
 import sys
 from asyncio import create_subprocess_exec, gather, get_event_loop
+from contextlib import ExitStack
 from functools import total_ordering
 from io import BytesIO
 from pathlib import Path
@@ -101,8 +103,18 @@ async def build(version: Version, architecture: Architecture) -> None:
                 archive.extractall(temp)
 
             await ensure_pip(Path(temp))
-    else:
-        raise NotImplementedError()
+
+            os.makedirs(cache.parent, exist_ok=True)
+            with ExitStack() as stack:
+                enter = stack.enter_context
+                archive = enter(ZipFile(enter(cache.open("wb")), mode="w"))
+                for path in Path(temp).rglob("*"):
+                    archive.write(path, path.relative_to(temp))
+
+    with ExitStack() as stack:
+        enter = stack.enter_context
+        archive = enter(ZipFile(enter(cache.open("rb")), mode="r"))
+        print(archive)
 
 
 async def get_temp_path() -> Path:
