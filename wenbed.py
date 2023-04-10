@@ -2,9 +2,9 @@ import argparse
 import enum
 import re
 import sys
-from asyncio import get_event_loop
+from asyncio import create_subprocess_exec, get_event_loop
 from functools import total_ordering
-from subprocess import PIPE, run
+from subprocess import PIPE, CalledProcessError, run
 from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
 
 if sys.version_info < (3, 6, 1):
@@ -86,6 +86,21 @@ def get_embed_uri(version: Version, architecture: Architecture) -> URI:
     return URI(
         f"https://www.python.org/ftp/python/{version}/python-{version}-embed-{architecture}.zip"
     )
+
+
+async def get_windows_environ(chcp: str, cmd: str, key: str) -> "str | None":
+    encoding = detect_windows_encoding(chcp)
+
+    expr = f"%{key}%"
+    command = [cmd, "/C", "echo", expr]
+    process = await create_subprocess_exec(*command, stdout=PIPE, stderr=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    stdout = bstdout.rstrip(b"\r\n").decode(encoding)
+
+    return None if stdout == expr else stdout
 
 
 def detect_windows_encoding(chcp: str) -> str:
