@@ -1,17 +1,19 @@
 import argparse
 import re
 from subprocess import PIPE, run
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NewType, cast
+
+Platform = NewType("Platform", str)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from typing import Final, Protocol
 
     class Namespace(Protocol):
-        arch: Sequence[str]
-        package: Sequence[str]
+        platform: Platform
         output: str
         verbose: int
+        pip_argument: Sequence[str]
 
 
 def main() -> None:
@@ -20,10 +22,10 @@ def main() -> None:
 
 def parse_args() -> "Namespace":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-a", "--arch", nargs="+", required=True)
-    parser.add_argument("-p", "--package", nargs="+", required=True)
     parser.add_argument("-o", "--output", nargs="?", default=".")
-    parser.add_argument("-v", "--verbose", action="count")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
+    parser.add_argument("platform")
+    parser.add_argument("pip-argument", nargs="+")
 
     return cast("Namespace", parser.parse_args())
 
