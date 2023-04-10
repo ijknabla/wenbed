@@ -11,6 +11,7 @@ if sys.version_info < (3, 6, 1):
 
 
 Platform = NewType("Platform", str)
+URI = NewType("URI", str)
 
 
 class Version(NamedTuple):
@@ -18,12 +19,18 @@ class Version(NamedTuple):
     minor: int
     micro: int
 
+    def __str__(self) -> str:
+        return ".".join(map(str, self))
+
 
 @total_ordering
 class Architecture(enum.Enum):
     win32 = enum.auto()
     amd64 = enum.auto()
     arm64 = enum.auto()
+
+    def __str__(self) -> str:
+        return self.name
 
     def __lt__(self, other: "Architecture") -> bool:
         return self.value < other.value
@@ -42,7 +49,8 @@ if TYPE_CHECKING:
 
 def main() -> None:
     args = parse_args()
-    sorted(set(iter_platform(args.platform)))
+    for v, a in sorted(set(iter_platform(args.platform))):
+        print(get_embed_uri(v, a))
 
 
 def parse_args() -> "Namespace":
@@ -70,6 +78,12 @@ def iter_platform(
         micro = int(matched.group(3))
         architecture = Architecture[matched.group(4)]
         yield Version(major=major, minor=minor, micro=micro), architecture
+
+
+def get_embed_uri(version: Version, architecture: Architecture) -> URI:
+    return URI(
+        f"https://www.python.org/ftp/python/{version}/python-{version}-embed-{architecture}.zip"
+    )
 
 
 def detect_windows_encoding(chcp: str) -> str:
