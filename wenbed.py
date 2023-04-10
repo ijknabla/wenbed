@@ -1,3 +1,5 @@
+import re
+from subprocess import PIPE, run
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -6,6 +8,17 @@ if TYPE_CHECKING:
 
 def main() -> None:
     ...
+
+
+def detect_windows_encoding(chcp: str) -> str:
+    process = run([chcp], stdout=PIPE, check=True)
+    matched = re.search(rb"\d+", process.stdout)
+    if matched is None:
+        raise ValueError(process.stdout)
+    codepage = int(matched.group(0))
+    encoding = CODEPAGE2ENCODING[codepage]
+    process.stdout.decode(encoding)
+    return encoding
 
 
 CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
