@@ -6,7 +6,7 @@ from asyncio import create_subprocess_exec, gather, get_event_loop
 from functools import total_ordering
 from pathlib import Path
 from shutil import which
-from subprocess import PIPE, CalledProcessError, run
+from subprocess import PIPE, CalledProcessError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
 
@@ -104,7 +104,7 @@ async def get_temp_path() -> Path:
 
 
 async def get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
-    encoding = get_windows_encoding(chcp)
+    encoding = await get_windows_encoding(chcp)
     tmps = await gather(
         *(get_windows_environ(cmd, key, encoding) for key in ["TMPDIR", "TEMP", "TMP"])
     )
@@ -117,14 +117,19 @@ async def get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
     raise RuntimeError("Can't find tempdir")
 
 
-def get_windows_encoding(chcp: str) -> str:
-    process = run([chcp], stdout=PIPE, check=True)
-    matched = re.search(rb"\d+", process.stdout)
+async def get_windows_encoding(chcp: str) -> str:
+    command = [chcp]
+    process = await create_subprocess_exec(*command, stdout=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    matched = re.search(rb"\d+", bstdout)
     if matched is None:
-        raise ValueError(process.stdout)
+        raise ValueError(bstdout)
     codepage = int(matched.group(0))
     encoding = CODEPAGE2ENCODING[codepage]
-    process.stdout.decode(encoding)
+    bstdout.decode(encoding)
     return encoding
 
 
