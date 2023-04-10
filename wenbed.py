@@ -25,7 +25,7 @@ class Architecture(enum.Enum):
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     from typing import Final, Protocol
 
     class Namespace(Protocol):
@@ -36,7 +36,8 @@ if TYPE_CHECKING:
 
 
 def main() -> None:
-    print(parse_args())
+    args = parse_args()
+    sorted(set(iter_platform(args.platform)))
 
 
 def parse_args() -> "Namespace":
@@ -47,6 +48,23 @@ def parse_args() -> "Namespace":
     parser.add_argument("pip-argument", nargs="+")
 
     return cast("Namespace", parser.parse_args())
+
+
+def iter_platform(
+    platform: Platform,
+) -> "Iterator[tuple[Version, Architecture]]":
+    version_architecture = re.compile(
+        r"(\d+)\.(\d+)\.(\d+)\-" rf"({'|'.join(a.name for a in Architecture)})"
+    )
+    for word in platform.split(","):
+        matched = version_architecture.fullmatch(word)
+        if matched is None:
+            raise ValueError(f"{word!r} does not match {version_architecture.pattern}")
+        major = int(matched.group(1))
+        minor = int(matched.group(2))
+        micro = int(matched.group(3))
+        architecture = Architecture[matched.group(4)]
+        yield Version(major=major, minor=minor, micro=micro), architecture
 
 
 def detect_windows_encoding(chcp: str) -> str:
