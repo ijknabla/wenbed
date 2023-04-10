@@ -92,13 +92,15 @@ def iter_platform(
 
 
 async def build(version: Version, architecture: Architecture) -> None:
-    temp = await get_temp_path()
-    cache = temp / f"wenbed/versions/{version}/{get_embed_name(version, architecture)}"
+    temp_root = await get_temp_path()
+    cache = temp_root / f"wenbed/versions/{version}/{get_embed_name(version, architecture)}"
     if not cache.exists():
         embed_uri = get_embed_uri(version, architecture)
-        with TemporaryDirectory(dir=temp) as tmp:
+        with TemporaryDirectory(dir=temp_root) as temp:
             with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
-                archive.extractall(tmp)
+                archive.extractall(temp)
+
+            await ensure_pip(Path(temp))
     else:
         raise NotImplementedError()
 
@@ -179,6 +181,32 @@ def get_embed_uri(version: Version, architecture: Architecture) -> URI:
 def download(uri: URI) -> bytes:
     with urlopen(uri) as response:
         return cast(bytes, response.read())
+
+
+async def ensure_pip(directory: Path) -> None:
+    (executable,) = map(str, directory.rglob("python.exe"))
+
+    pip_check = await create_subprocess_exec(executable, "-m", "pip")
+    await pip_check.wait()
+    if pip_check.returncode:
+        pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
+        for pth in directory.rglob("*._pth"):
+            text = pth.read_text(encoding="utf-8")
+            substituted = pattern.sub(r"\1", text)
+            if text != substituted:
+                pth.write_text(substituted, encoding="utf-8")
+
+        command = [executable]
+        python = await create_subprocess_exec(*command, stdin=PIPE)
+        await python.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
+        if python.returncode:
+            raise CalledProcessError(python.returncode, command)
+
+    command = [executable, "-m", "pip", "install", "--upgrade", "pip"]
+    pip_install = await create_subprocess_exec(*command)
+    await pip_install.wait()
+    if pip_install.returncode:
+        raise CalledProcessError(pip_install.returncode, command)
 
 
 CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
