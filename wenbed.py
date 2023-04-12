@@ -5,26 +5,39 @@ import os
 import re
 import sys
 from asyncio import create_subprocess_exec, gather, get_event_loop, set_event_loop
+from collections.abc import AsyncGenerator, Callable, Iterator, Sequence
 from contextlib import ExitStack
-from functools import total_ordering
+from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
 from shutil import which
 from subprocess import PIPE, CalledProcessError
 from tempfile import TemporaryDirectory, gettempdir
-from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
+from types import TracebackType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncContextManager,
+    Generic,
+    NamedTuple,
+    NewType,
+    Type,
+    TypeVar,
+    cast,
+)
 from urllib.request import urlopen
 from zipfile import ZipFile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-    from typing import Final, Protocol
+    from typing import Final, ParamSpec, Protocol
 
 if sys.version_info < (3, 6, 1):
     raise RuntimeError("wenbed requires python>=3.6.1")
 
 
-T = TypeVar("T")
+if TYPE_CHECKING:
+    _P = ParamSpec("_P")
+_T = TypeVar("_T")
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
 
@@ -58,6 +71,84 @@ if TYPE_CHECKING:
         output: str
         verbose: int
         pip_argument: Sequence[str]
+
+
+def asynccontextmanager(
+    func: "Callable[_P, AsyncGenerator[_T, Any]]",
+) -> "Callable[_P, AsyncContextManager[_T]]":
+    @wraps(func)
+    def wrapped(*args: "_P.args", **kwargs: "_P.kwargs") -> "AsyncContextManager[_T]":
+        return _AsyncGeneratorContextManager[_T](func(*args, **kwargs))
+
+    return wrapped
+
+
+class _AsyncGeneratorContextManager(Generic[_T]):
+    """Helper for @asynccontextmanager decorator."""
+
+    gen: "AsyncGenerator[_T, Any]"
+
+    def __init__(self, gen: "AsyncGenerator[_T, Any]") -> None:
+        self.gen = gen
+
+    async def __aenter__(self) -> _T:
+        try:
+            return await self.gen.__anext__()
+        except StopAsyncIteration:
+            raise RuntimeError("generator didn't yield") from None
+
+    async def __aexit__(
+        self,
+        typ: "Type[BaseException] | None",
+        value: "BaseException | None",
+        traceback: "TracebackType | None",
+    ) -> "bool | None":
+        if typ is None:
+            try:
+                await self.gen.__anext__()
+            except StopAsyncIteration:
+                return False
+            else:
+                raise RuntimeError("generator didn't stop")
+        else:
+            if value is None:
+                # Need to force instantiation so we can reliably
+                # tell if we get the same exception back
+                value = typ()
+            try:
+                await self.gen.athrow(typ, value, traceback)
+            except StopAsyncIteration as exc:
+                # Suppress StopIteration *unless* it's the same exception that
+                # was passed to throw().  This prevents a StopIteration
+                # raised inside the "with" statement from being suppressed.
+                return exc is not value
+            except RuntimeError as exc:
+                # Don't re-raise the passed in exception. (issue27122)
+                if exc is value:
+                    return False
+                # Avoid suppressing if a Stop(Async)Iteration exception
+                # was passed to athrow() and later wrapped into a RuntimeError
+                # (see PEP 479 for sync generators; async generators also
+                # have this behavior). But do this only if the exception wrapped
+                # by the RuntimeError is actully Stop(Async)Iteration (see
+                # issue29692).
+                if (
+                    isinstance(value, (StopIteration, StopAsyncIteration))
+                    and exc.__cause__ is value
+                ):
+                    return False
+                raise
+            except BaseException as exc:
+                # only re-raise if it's *not* the exception that was
+                # passed to throw(), because __exit__() must not raise
+                # an exception unless __exit__() itself failed.  But throw()
+                # has to raise the exception to signal propagation, so this
+                # fixes the impedance mismatch between the throw() protocol
+                # and the __exit__() protocol.
+                if exc is not value:
+                    raise
+                return False
+            raise RuntimeError("generator didn't stop after athrow()")
 
 
 async def main() -> None:
