@@ -16,6 +16,10 @@ from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
 from zipfile import ZipFile
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from typing import Final, Protocol
+
 if sys.version_info < (3, 6, 1):
     raise RuntimeError("wenbed requires python>=3.6.1")
 
@@ -48,8 +52,6 @@ class Architecture(enum.Enum):
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-    from typing import Final, Protocol
 
     class Namespace(Protocol):
         platform: Platform
