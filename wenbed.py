@@ -1,12 +1,17 @@
+from __future__ import annotations
+
+import sys
+
+if sys.version_info[:2] < (3, 7):
+    raise RuntimeError("wenbed requires python>=3.7")
+
 import argparse
 import asyncio
 import enum
 import os
 import re
-import sys
-from asyncio import create_subprocess_exec, gather, get_event_loop, set_event_loop
-from collections import deque
-from collections.abc import AsyncGenerator, Callable, Iterator, Sequence
+from asyncio import create_subprocess_exec, gather, run, set_event_loop
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import ExitStack
 from functools import total_ordering, wraps
 from io import BytesIO
@@ -14,27 +19,12 @@ from pathlib import Path
 from shutil import which
 from subprocess import PIPE, CalledProcessError
 from tempfile import TemporaryDirectory, gettempdir
-from types import MethodType, TracebackType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncContextManager,
-    ContextManager,
-    Generic,
-    NamedTuple,
-    NewType,
-    Type,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
 from zipfile import ZipFile
 
 if TYPE_CHECKING:
     from typing import Final, ParamSpec, Protocol
-
-if sys.version_info < (3, 6, 1):
-    raise RuntimeError("wenbed requires python>=3.6.1")
 
 
 if TYPE_CHECKING:
@@ -43,6 +33,17 @@ _T = TypeVar("_T")
 _T_co = TypeVar("_T_co", covariant=True)
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
+
+if sys.platform == "win32":
+    set_event_loop(asyncio.ProactorEventLoop())
+
+
+def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _T]:
+    @wraps(f_co)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        return run(f_co(*args, **kwargs))
+
+    return wrapped
 
 
 class Version(NamedTuple):
@@ -76,309 +77,7 @@ if TYPE_CHECKING:
         pip_argument: Sequence[str]
 
 
-if sys.version_info[:2] >= (3, 7):
-    from contextlib import AsyncExitStack, asynccontextmanager
-elif not TYPE_CHECKING:
-
-    def asynccontextmanager(
-        func: "Callable[_P, AsyncGenerator[_T, Any]]",
-    ) -> "Callable[_P, AsyncContextManager[_T]]":
-        @wraps(func)
-        def wrapped(*args: "_P.args", **kwargs: "_P.kwargs") -> "AsyncContextManager[_T]":
-            return _AsyncGeneratorContextManager[_T](func(*args, **kwargs))
-
-        return wrapped
-
-    class _AsyncGeneratorContextManager(Generic[_T]):
-        """Helper for @asynccontextmanager decorator."""
-
-        gen: "AsyncGenerator[_T, Any]"
-
-        def __init__(self, gen: "AsyncGenerator[_T, Any]") -> None:
-            self.gen = gen
-
-        async def __aenter__(self) -> _T:
-            try:
-                return await self.gen.__anext__()
-            except StopAsyncIteration:
-                raise RuntimeError("generator didn't yield") from None
-
-        async def __aexit__(
-            self,
-            typ: "Type[BaseException] | None",
-            value: "BaseException | None",
-            traceback: "TracebackType | None",
-        ) -> "bool | None":
-            if typ is None:
-                try:
-                    await self.gen.__anext__()
-                except StopAsyncIteration:
-                    return False
-                else:
-                    raise RuntimeError("generator didn't stop")
-            else:
-                if value is None:
-                    # Need to force instantiation so we can reliably
-                    # tell if we get the same exception back
-                    value = typ()
-                try:
-                    await self.gen.athrow(typ, value, traceback)
-                except StopAsyncIteration as exc:
-                    # Suppress StopIteration *unless* it's the same exception that
-                    # was passed to throw().  This prevents a StopIteration
-                    # raised inside the "with" statement from being suppressed.
-                    return exc is not value
-                except RuntimeError as exc:
-                    # Don't re-raise the passed in exception. (issue27122)
-                    if exc is value:
-                        return False
-                    # Avoid suppressing if a Stop(Async)Iteration exception
-                    # was passed to athrow() and later wrapped into a RuntimeError
-                    # (see PEP 479 for sync generators; async generators also
-                    # have this behavior). But do this only if the exception wrapped
-                    # by the RuntimeError is actully Stop(Async)Iteration (see
-                    # issue29692).
-                    if (
-                        isinstance(value, (StopIteration, StopAsyncIteration))
-                        and exc.__cause__ is value
-                    ):
-                        return False
-                    raise
-                except BaseException as exc:
-                    # only re-raise if it's *not* the exception that was
-                    # passed to throw(), because __exit__() must not raise
-                    # an exception unless __exit__() itself failed.  But throw()
-                    # has to raise the exception to signal propagation, so this
-                    # fixes the impedance mismatch between the throw() protocol
-                    # and the __exit__() protocol.
-                    if exc is not value:
-                        raise
-                    return False
-                raise RuntimeError("generator didn't stop after athrow()")
-
-    class _BaseExitStack:
-        """A base class for ExitStack and AsyncExitStack."""
-
-        @staticmethod
-        def _create_exit_wrapper(cm, cm_exit):
-            return MethodType(cm_exit, cm)
-
-        @staticmethod
-        def _create_cb_wrapper(callback, *args, **kwds):
-            def _exit_wrapper(exc_type, exc, tb):
-                callback(*args, **kwds)
-
-            return _exit_wrapper
-
-        def __init__(self) -> None:
-            self._exit_callbacks = deque()
-
-        def pop_all(self):
-            """Preserve the context stack by transferring it to a new instance."""
-            new_stack = type(self)()
-            new_stack._exit_callbacks = self._exit_callbacks
-            self._exit_callbacks = deque()
-            return new_stack
-
-        def push(self, exit):
-            """Registers a callback with the standard __exit__ method signature.
-
-            Can suppress exceptions the same way __exit__ method can.
-            Also accepts any object with an __exit__ method (registering a call
-            to the method instead of the object itself).
-            """
-            # We use an unbound method rather than a bound method to follow
-            # the standard lookup behaviour for special methods.
-            _cb_type = type(exit)
-
-            try:
-                exit_method = _cb_type.__exit__
-            except AttributeError:
-                # Not a context manager, so assume it's a callable.
-                self._push_exit_callback(exit)
-            else:
-                self._push_cm_exit(exit, exit_method)
-            return exit  # Allow use as a decorator.
-
-        def enter_context(self, cm: ContextManager[_T_co]) -> _T_co:
-            """Enters the supplied context manager.
-
-            If successful, also pushes its __exit__ method as a callback and
-            returns the result of the __enter__ method.
-            """
-            # We look up the special methods on the type to match the with
-            # statement.
-            _cm_type = type(cm)
-            _exit = _cm_type.__exit__
-            result: _T_co
-            result = _cm_type.__enter__(cm)
-            self._push_cm_exit(cm, _exit)
-            return result
-
-        def callback(self, callback, *args, **kwds):
-            """Registers an arbitrary callback and arguments.
-
-            Cannot suppress exceptions.
-            """
-            _exit_wrapper = self._create_cb_wrapper(callback, *args, **kwds)
-
-            # We changed the signature, so using @wraps is not appropriate, but
-            # setting __wrapped__ may still help with introspection.
-            _exit_wrapper.__wrapped__ = callback
-            self._push_exit_callback(_exit_wrapper)
-            return callback  # Allow use as a decorator
-
-        def _push_cm_exit(self, cm, cm_exit):
-            """Helper to correctly register callbacks to __exit__ methods."""
-            _exit_wrapper = self._create_exit_wrapper(cm, cm_exit)
-            self._push_exit_callback(_exit_wrapper, True)
-
-        def _push_exit_callback(self, callback, is_sync=True):
-            self._exit_callbacks.append((is_sync, callback))
-
-    # Inspired by discussions on https://bugs.python.org/issue29302
-    class AsyncExitStack(_BaseExitStack):
-        """Async context manager for dynamic management of a stack of exit
-        callbacks.
-
-        For example:
-            async with AsyncExitStack() as stack:
-                connections = [await stack.enter_async_context(get_connection())
-                    for i in range(5)]
-                # All opened connections will automatically be released at the
-                # end of the async with statement, even if attempts to open a
-                # connection later in the list raise an exception.
-        """
-
-        @staticmethod
-        def _create_async_exit_wrapper(cm, cm_exit):
-            return MethodType(cm_exit, cm)
-
-        @staticmethod
-        def _create_async_cb_wrapper(callback, *args, **kwds):
-            async def _exit_wrapper(exc_type, exc, tb):
-                await callback(*args, **kwds)
-
-            return _exit_wrapper
-
-        async def enter_async_context(self, cm: AsyncContextManager[_T_co]) -> _T_co:
-            """Enters the supplied async context manager.
-
-            If successful, also pushes its __aexit__ method as a callback and
-            returns the result of the __aenter__ method.
-            """
-            _cm_type = type(cm)
-            _exit = _cm_type.__aexit__
-            result: _T_co
-            result = await _cm_type.__aenter__(cm)
-            self._push_async_cm_exit(cm, _exit)
-            return result
-
-        def push_async_exit(self, exit):
-            """Registers a coroutine function with the standard __aexit__ method
-            signature.
-
-            Can suppress exceptions the same way __aexit__ method can.
-            Also accepts any object with an __aexit__ method (registering a call
-            to the method instead of the object itself).
-            """
-            _cb_type = type(exit)
-            try:
-                exit_method = _cb_type.__aexit__
-            except AttributeError:
-                # Not an async context manager, so assume it's a coroutine function
-                self._push_exit_callback(exit, False)
-            else:
-                self._push_async_cm_exit(exit, exit_method)
-            return exit  # Allow use as a decorator
-
-        def push_async_callback(self, callback, *args, **kwds):
-            """Registers an arbitrary coroutine function and arguments.
-
-            Cannot suppress exceptions.
-            """
-            _exit_wrapper = self._create_async_cb_wrapper(callback, *args, **kwds)
-
-            # We changed the signature, so using @wraps is not appropriate, but
-            # setting __wrapped__ may still help with introspection.
-            _exit_wrapper.__wrapped__ = callback
-            self._push_exit_callback(_exit_wrapper, False)
-            return callback  # Allow use as a decorator
-
-        async def aclose(self) -> None:
-            """Immediately unwind the context stack."""
-            await self.__aexit__(None, None, None)
-
-        def _push_async_cm_exit(self, cm, cm_exit):
-            """Helper to correctly register coroutine function to __aexit__
-            method."""
-            _exit_wrapper = self._create_async_exit_wrapper(cm, cm_exit)
-            self._push_exit_callback(_exit_wrapper, False)
-
-        async def __aenter__(self) -> "AsyncExitStack":
-            return self
-
-        async def __aexit__(
-            self,
-            typ: "Type[BaseException] | None",
-            value: "BaseException | None",
-            traceback: "TracebackType | None",
-        ) -> "bool | None":
-            exc_details = typ, value, traceback
-            received_exc = exc_details[0] is not None
-
-            # We manipulate the exception state so it behaves as though
-            # we were actually nesting multiple with statements
-            frame_exc = sys.exc_info()[1]
-
-            def _fix_exception_context(new_exc, old_exc):
-                # Context may not be correct, so find the end of the chain
-                while 1:
-                    exc_context = new_exc.__context__
-                    if exc_context is None or exc_context is old_exc:
-                        # Context is already set correctly (see issue 20317)
-                        return
-                    if exc_context is frame_exc:
-                        break
-                    new_exc = exc_context
-                # Change the end of the chain to point to the exception
-                # we expect it to reference
-                new_exc.__context__ = old_exc
-
-            # Callbacks are invoked in LIFO order to match the behaviour of
-            # nested context managers
-            suppressed_exc = False
-            pending_raise = False
-            while self._exit_callbacks:
-                is_sync, cb = self._exit_callbacks.pop()
-                try:
-                    if is_sync:
-                        cb_suppress = cb(*exc_details)
-                    else:
-                        cb_suppress = await cb(*exc_details)
-
-                    if cb_suppress:
-                        suppressed_exc = True
-                        pending_raise = False
-                        exc_details = (None, None, None)
-                except:  # noqa: E722
-                    new_exc_details = sys.exc_info()
-                    # simulate the stack of exceptions by setting the context
-                    _fix_exception_context(new_exc_details[1], exc_details[1])
-                    pending_raise = True
-                    exc_details = new_exc_details
-            if pending_raise:
-                try:
-                    # bare "raise exc_details[1]" replaces our carefully
-                    # set-up context
-                    fixed_ctx = exc_details[1].__context__
-                    raise exc_details[1]
-                except BaseException:
-                    exc_details[1].__context__ = fixed_ctx
-                    raise
-            return received_exc and suppressed_exc
-
-
+@run_coroutine
 async def main() -> None:
     args = parse_args()
 
@@ -543,7 +242,7 @@ async def ensure_pip(directory: Path) -> None:
         raise CalledProcessError(pip_install.returncode, command)
 
 
-CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
+CODEPAGE2ENCODING: Final[dict[int, str]] = {
     37: "cp037",
     437: "cp437",
     500: "cp500",
@@ -566,10 +265,12 @@ CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
     874: "cp874",
     875: "cp875",
     932: "cp932",
+    936: "gb2312",
     949: "cp949",
     950: "cp950",
     1026: "cp1026",
     1140: "cp1140",
+    1200: "utf_16",
     1250: "cp1250",
     1251: "cp1251",
     1252: "cp1252",
@@ -579,8 +280,6 @@ CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
     1256: "cp1256",
     1257: "cp1257",
     1258: "cp1258",
-    936: "gb2312",
-    1200: "utf_16",
     1361: "johab",
     12000: "utf_32",
     12001: "utf_32_be",
@@ -609,7 +308,4 @@ CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        set_event_loop(asyncio.ProactorEventLoop())
-    loop = get_event_loop()
-    loop.run_until_complete(main())
+    main()
