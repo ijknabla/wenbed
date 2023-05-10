@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 
 if sys.version_info[:2] < (3, 7):
@@ -228,7 +230,7 @@ async def ensure_pip(directory: Path) -> None:
         raise CalledProcessError(pip_install.returncode, command)
 
 
-CODEPAGE2ENCODING: "Final[dict[int, str]]" = {
+CODEPAGE2ENCODING: Final[dict[int, str]] = {
     37: "cp037",
     437: "cp437",
     500: "cp500",
