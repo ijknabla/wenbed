@@ -10,16 +10,16 @@ import asyncio
 import enum
 import os
 import re
-from asyncio import create_subprocess_exec, gather, get_event_loop, set_event_loop
-from collections.abc import Iterator, Sequence
+from asyncio import create_subprocess_exec, gather, run, set_event_loop
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import ExitStack
-from functools import total_ordering
+from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
 from shutil import which
 from subprocess import PIPE, CalledProcessError
 from tempfile import TemporaryDirectory, gettempdir
-from typing import TYPE_CHECKING, NamedTuple, NewType, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
 from zipfile import ZipFile
 
@@ -33,6 +33,17 @@ _T = TypeVar("_T")
 _T_co = TypeVar("_T_co", covariant=True)
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
+
+if sys.platform == "win32":
+    set_event_loop(asyncio.ProactorEventLoop())
+
+
+def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _T]:
+    @wraps(f_co)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        return run(f_co(*args, **kwargs))
+
+    return wrapped
 
 
 class Version(NamedTuple):
@@ -66,6 +77,7 @@ if TYPE_CHECKING:
         pip_argument: Sequence[str]
 
 
+@run_coroutine
 async def main() -> None:
     args = parse_args()
 
@@ -296,7 +308,4 @@ CODEPAGE2ENCODING: Final[dict[int, str]] = {
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        set_event_loop(asyncio.ProactorEventLoop())
-    loop = get_event_loop()
-    loop.run_until_complete(main())
+    main()
