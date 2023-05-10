@@ -1,9 +1,13 @@
+import sys
+
+if sys.version_info[:2] < (3, 7):
+    raise RuntimeError("wenbed requires python>=3.7")
+
 import argparse
 import asyncio
 import enum
 import os
 import re
-import sys
 from asyncio import create_subprocess_exec, gather, get_event_loop, set_event_loop
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterator, Sequence
@@ -32,9 +36,6 @@ from zipfile import ZipFile
 
 if TYPE_CHECKING:
     from typing import Final, ParamSpec, Protocol
-
-if sys.version_info < (3, 6, 1):
-    raise RuntimeError("wenbed requires python>=3.6.1")
 
 
 if TYPE_CHECKING:
