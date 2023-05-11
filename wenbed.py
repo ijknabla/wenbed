@@ -6,11 +6,12 @@ if sys.version_info[:2] < (3, 7):
     raise RuntimeError("wenbed requires python>=3.7")
 
 import argparse
-import asyncio
 import enum
 import re
 from asyncio import create_subprocess_exec, gather, run, set_event_loop
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from asyncio.subprocess import Process
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator, Sequence
+from contextlib import asynccontextmanager
 from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
@@ -32,7 +33,9 @@ Platform = NewType("Platform", str)
 URI = NewType("URI", str)
 
 if sys.platform == "win32":
-    set_event_loop(asyncio.ProactorEventLoop())
+    from asyncio import ProactorEventLoop
+
+    set_event_loop(ProactorEventLoop())
 
 
 def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _T]:
@@ -147,13 +150,13 @@ def download(uri: URI) -> bytes:
         return cast(bytes, response.read())
 
 
-def get_executable(directory: Path) -> str:
+def get_python_embed_executable(directory: Path) -> str:
     (executable,) = directory.glob("python.exe")
     return str(executable)
 
 
 async def ensure_pip(directory: Path) -> None:
-    executable = get_executable(directory)
+    executable = get_python_embed_executable(directory)
 
     pip_check = await create_subprocess_exec(executable, "-m", "pip")
     await pip_check.wait()
@@ -179,10 +182,35 @@ async def ensure_pip(directory: Path) -> None:
 
 
 async def run_pip(directory: Path, argument: Sequence[str]) -> None:
-    executable = get_executable(directory)
+    executable = get_python_embed_executable(directory)
     cmd = [executable, "-m", "pip", *argument]
     process = await create_subprocess_exec(*cmd)
     await process.wait()
+
+
+@asynccontextmanager
+@wraps(create_subprocess_exec)
+async def aopen_subprocess(
+    program: str, *args: str, **kwargs: Any
+) -> AsyncGenerator[Process, None]:
+    process = await create_subprocess_exec(program, *args, **kwargs)
+    try:
+        yield process
+    except Exception:
+        returncode = process.returncode
+        if returncode is None:
+            process.terminate()
+            await process.wait()
+            raise
+        elif returncode != 0:
+            raise CalledProcessError(returncode, [program, *args])
+
+    returncode = process.returncode
+    if returncode is None:
+        process.terminate()
+        await process.wait()
+    elif returncode != 0:
+        raise CalledProcessError(returncode, [program, *args])
 
 
 # unused utilities for windows & wsl
