@@ -6,11 +6,12 @@ if sys.version_info[:2] < (3, 7):
     raise RuntimeError("wenbed requires python>=3.7")
 
 import argparse
-import asyncio
 import enum
 import re
 from asyncio import create_subprocess_exec, gather, run, set_event_loop
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from asyncio.subprocess import Process
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +20,7 @@ from subprocess import PIPE, CalledProcessError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
+from warnings import warn
 from zipfile import ZipFile
 
 if TYPE_CHECKING:
@@ -28,12 +30,13 @@ if TYPE_CHECKING:
 if TYPE_CHECKING:
     _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_T_co = TypeVar("_T_co", covariant=True)
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
 
 if sys.platform == "win32":
-    set_event_loop(asyncio.ProactorEventLoop())
+    from asyncio import ProactorEventLoop
+
+    set_event_loop(ProactorEventLoop())
 
 
 def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _T]:
@@ -42,6 +45,51 @@ def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _
         return run(f_co(*args, **kwargs))
 
     return wrapped
+
+
+@run_coroutine
+async def main() -> None:
+    args = parse_args()
+
+    results = await gather(
+        *(
+            setup_python_embed(Path(args.output), v, a, args.pip_argument)
+            for v, a in set(iter_platform(args.platform))
+        ),
+        return_exceptions=True,
+    )
+    exceptions = [(i, exc) for i, exc in enumerate(results) if isinstance(exc, BaseException)]
+
+    if exceptions:
+        warning_lines = [
+            f"{len(exceptions)} exception(s) raised!",
+            *(f"[{i}/{len(exceptions)}] {type(exc).__name__}" for i, exc in exceptions),
+            "Raise first exception!",
+        ]
+        warn(Warning("\n".join(warning_lines)))
+        (_, exc), *_ = exceptions
+        raise exc
+
+
+# arguments & options
+
+if TYPE_CHECKING:
+
+    class Namespace(Protocol):
+        platform: Platform
+        output: str
+        verbose: int
+        pip_argument: Sequence[str]
+
+
+def parse_args() -> "Namespace":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-o", "--output", nargs="?", default=".")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
+    parser.add_argument("platform")
+    parser.add_argument("pip_argument", nargs="+")
+
+    return cast("Namespace", parser.parse_args())
 
 
 class Version(NamedTuple):
@@ -66,41 +114,9 @@ class Architecture(enum.Enum):
         return self.value < other.value
 
 
-if TYPE_CHECKING:
-
-    class Namespace(Protocol):
-        platform: Platform
-        output: str
-        verbose: int
-        pip_argument: Sequence[str]
-
-
-@run_coroutine
-async def main() -> None:
-    args = parse_args()
-
-    await gather(
-        *(
-            build(Path(args.output), v, a, args.pip_argument)
-            for v, a in set(iter_platform(args.platform))
-        ),
-        # return_exceptions=True,
-    )
-
-
-def parse_args() -> "Namespace":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-o", "--output", nargs="?", default=".")
-    parser.add_argument("-v", "--verbose", action="count", default=0)
-    parser.add_argument("platform")
-    parser.add_argument("pip_argument", nargs="+")
-
-    return cast("Namespace", parser.parse_args())
-
-
 def iter_platform(
     platform: Platform,
-) -> "Iterator[tuple[Version, Architecture]]":
+) -> Iterator[tuple[Version, Architecture]]:
     version_architecture = re.compile(
         rf"(\d+)\.(\d+)\.(\d+)\-({'|'.join(a.name for a in Architecture)})"
     )
@@ -115,80 +131,30 @@ def iter_platform(
         yield Version(major=major, minor=minor, micro=micro), architecture
 
 
-async def build(
+# python package installation
+
+
+async def setup_python_embed(
     root: Path, version: Version, architecture: Architecture, pip_argument: Sequence[str]
 ) -> None:
-    embed_uri = get_embed_uri(version, architecture)
     directory = root / get_embed_name(version, architecture)
 
-    with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
-        archive.extractall(directory)
+    try:
+        python = get_python_embed_executable(directory)
+    except Exception:
+        embed_uri = get_embed_uri(version, architecture)
+        with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
+            archive.extractall(directory)
 
-    await ensure_pip(directory)
-    await run_pip(directory, pip_argument)
+        python = get_python_embed_executable(directory)
 
+    await run_subprocess(python, "-V")
 
-async def get_temp_path() -> Path:
-    chcp = which("chcp.com")
-    cmd = which("cmd.exe")
-    wslpath = which("wslpath")
-    if chcp is not None and cmd is not None and wslpath is not None:
-        return await get_windows_temp_path(chcp=chcp, cmd=cmd, wslpath=wslpath)
-    else:
-        return Path(gettempdir())
+    if await run_subprocess(python, "-m", "pip", check=False) != 0:
+        await get_pip(python)
 
-
-async def get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
-    encoding = await get_windows_encoding(chcp)
-    tmps = await gather(
-        *(get_windows_environ(cmd, key, encoding) for key in ["TMPDIR", "TEMP", "TMP"])
-    )
-    for tmp in tmps:
-        if tmp is None:
-            continue
-        path = await windows2posix(wslpath, tmp, encoding)
-        if path.exists():
-            return path
-    raise RuntimeError("Can't find tempdir")
-
-
-async def get_windows_encoding(chcp: str) -> str:
-    command = [chcp]
-    process = await create_subprocess_exec(*command, stdout=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    matched = re.search(rb"\d+", bstdout)
-    if matched is None:
-        raise ValueError(bstdout)
-    codepage = int(matched.group(0))
-    encoding = CODEPAGE2ENCODING[codepage]
-    bstdout.decode(encoding)
-    return encoding
-
-
-async def get_windows_environ(cmd: str, key: str, encoding: str) -> "str | None":
-    expr = f"%{key}%"
-    command = [cmd, "/C", "echo", expr]
-    process = await create_subprocess_exec(*command, stdout=PIPE, stderr=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    stdout = bstdout.rstrip(b"\r\n").decode(encoding)
-    return None if stdout == expr else stdout
-
-
-async def windows2posix(wslpath: str, path: str, encoding: str) -> Path:
-    command = [wslpath, "-u", path]
-    process = await create_subprocess_exec(*command, stdout=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    stdout = bstdout.rstrip(b"\n").decode(encoding)
-    return Path(stdout)
+    await run_subprocess(python, "-m", "pip", "install", "--upgrade", "pip")
+    await run_subprocess(python, "-m", "pip", *pip_argument)
 
 
 def get_embed_name(version: Version, architecture: Architecture) -> str:
@@ -206,42 +172,123 @@ def download(uri: URI) -> bytes:
         return cast(bytes, response.read())
 
 
-def get_executable(directory: Path) -> str:
-    (executable,) = directory.glob("python.exe")
-    return str(executable)
+def get_python_embed_executable(directory: Path) -> str:
+    (python,) = directory.glob("python.exe")
+    return str(python)
 
 
-async def ensure_pip(directory: Path) -> None:
-    executable = get_executable(directory)
+async def get_pip(python: str) -> None:
+    pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
+    for pth in Path(python).parent.rglob("*._pth"):
+        text = pth.read_text(encoding="utf-8")
+        substituted = pattern.sub(r"\1", text)
+        if text != substituted:
+            pth.write_text(substituted, encoding="utf-8")
 
-    pip_check = await create_subprocess_exec(executable, "-m", "pip")
-    await pip_check.wait()
-    if pip_check.returncode:
-        pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
-        for pth in directory.rglob("*._pth"):
-            text = pth.read_text(encoding="utf-8")
-            substituted = pattern.sub(r"\1", text)
-            if text != substituted:
-                pth.write_text(substituted, encoding="utf-8")
-
-        command = [executable]
-        python = await create_subprocess_exec(*command, stdin=PIPE)
-        await python.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
-        if python.returncode:
-            raise CalledProcessError(python.returncode, command)
-
-    command = [executable, "-m", "pip", "install", "--upgrade", "pip"]
-    pip_install = await create_subprocess_exec(*command)
-    await pip_install.wait()
-    if pip_install.returncode:
-        raise CalledProcessError(pip_install.returncode, command)
+    async with aopen_subprocess(python, "-", stdin=PIPE) as process:
+        await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
 
 
-async def run_pip(directory: Path, argument: Sequence[str]) -> None:
-    executable = get_executable(directory)
-    cmd = [executable, "-m", "pip", *argument]
-    process = await create_subprocess_exec(*cmd)
-    await process.wait()
+async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
+    async with AsyncExitStack() as stack:
+        if not check:
+            stack.enter_context(suppress(CalledProcessError))
+        process = await stack.enter_async_context(aopen_subprocess(program, *args))
+        await process.wait()
+
+    assert process.returncode is not None
+    return process.returncode
+
+
+@asynccontextmanager
+@wraps(create_subprocess_exec)
+async def aopen_subprocess(
+    program: str, *args: str, **kwargs: Any
+) -> AsyncGenerator[Process, None]:
+    process = await create_subprocess_exec(program, *args, **kwargs)
+    try:
+        yield process
+    except Exception:
+        returncode = process.returncode
+        if returncode is None:
+            process.terminate()
+            await process.wait()
+            raise
+        elif returncode != 0:
+            raise CalledProcessError(returncode, [program, *args])
+
+    returncode = process.returncode
+    if returncode is None:
+        process.terminate()
+        await process.wait()
+    elif returncode != 0:
+        raise CalledProcessError(returncode, [program, *args])
+
+
+# unused utilities for windows & wsl
+
+
+async def _get_temp_path() -> Path:
+    chcp = which("chcp.com")
+    cmd = which("cmd.exe")
+    wslpath = which("wslpath")
+    if chcp is not None and cmd is not None and wslpath is not None:
+        return await _get_windows_temp_path(chcp=chcp, cmd=cmd, wslpath=wslpath)
+    else:
+        return Path(gettempdir())
+
+
+async def _get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
+    encoding = await _get_windows_encoding(chcp)
+    tmps = await gather(
+        *(_get_windows_environ(cmd, key, encoding) for key in ["TMPDIR", "TEMP", "TMP"])
+    )
+    for tmp in tmps:
+        if tmp is None:
+            continue
+        path = await _windows2posix(wslpath, tmp, encoding)
+        if path.exists():
+            return path
+    raise RuntimeError("Can't find tempdir")
+
+
+async def _get_windows_encoding(chcp: str) -> str:
+    command = [chcp]
+    process = await create_subprocess_exec(*command, stdout=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    matched = re.search(rb"\d+", bstdout)
+    if matched is None:
+        raise ValueError(bstdout)
+    codepage = int(matched.group(0))
+    encoding = CODEPAGE2ENCODING[codepage]
+    bstdout.decode(encoding)
+    return encoding
+
+
+async def _get_windows_environ(cmd: str, key: str, encoding: str) -> "str | None":
+    expr = f"%{key}%"
+    command = [cmd, "/C", "echo", expr]
+    process = await create_subprocess_exec(*command, stdout=PIPE, stderr=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    stdout = bstdout.rstrip(b"\r\n").decode(encoding)
+    return None if stdout == expr else stdout
+
+
+async def _windows2posix(wslpath: str, path: str, encoding: str) -> Path:
+    command = [wslpath, "-u", path]
+    process = await create_subprocess_exec(*command, stdout=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    stdout = bstdout.rstrip(b"\n").decode(encoding)
+    return Path(stdout)
 
 
 CODEPAGE2ENCODING: Final[dict[int, str]] = {
