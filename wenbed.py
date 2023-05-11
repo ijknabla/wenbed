@@ -8,17 +8,15 @@ if sys.version_info[:2] < (3, 7):
 import argparse
 import asyncio
 import enum
-import os
 import re
 from asyncio import create_subprocess_exec, gather, run, set_event_loop
 from collections.abc import Callable, Coroutine, Iterator, Sequence
-from contextlib import ExitStack
 from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
 from shutil import which
 from subprocess import PIPE, CalledProcessError
-from tempfile import TemporaryDirectory, gettempdir
+from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
 from zipfile import ZipFile
@@ -82,7 +80,10 @@ async def main() -> None:
     args = parse_args()
 
     await gather(
-        *(build(v, a) for v, a in set(iter_platform(args.platform))),
+        *(
+            build(Path(args.output), v, a, args.pip_argument)
+            for v, a in set(iter_platform(args.platform))
+        ),
         # return_exceptions=True,
     )
 
@@ -92,7 +93,7 @@ def parse_args() -> "Namespace":
     parser.add_argument("-o", "--output", nargs="?", default=".")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("platform")
-    parser.add_argument("pip-argument", nargs="+")
+    parser.add_argument("pip_argument", nargs="+")
 
     return cast("Namespace", parser.parse_args())
 
@@ -114,28 +115,17 @@ def iter_platform(
         yield Version(major=major, minor=minor, micro=micro), architecture
 
 
-async def build(version: Version, architecture: Architecture) -> None:
-    temp_root = await get_temp_path()
-    cache = temp_root / f"wenbed/versions/{version}/{get_embed_name(version, architecture)}"
-    if not cache.exists():
-        embed_uri = get_embed_uri(version, architecture)
-        with TemporaryDirectory(dir=temp_root) as temp:
-            with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
-                archive.extractall(temp)
+async def build(
+    root: Path, version: Version, architecture: Architecture, pip_argument: Sequence[str]
+) -> None:
+    embed_uri = get_embed_uri(version, architecture)
+    directory = root / get_embed_name(version, architecture)
 
-            await ensure_pip(Path(temp))
+    with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
+        archive.extractall(directory)
 
-            os.makedirs(cache.parent, exist_ok=True)
-            with ExitStack() as stack:
-                enter = stack.enter_context
-                archive = enter(ZipFile(enter(cache.open("wb")), mode="w"))
-                for path in Path(temp).rglob("*"):
-                    archive.write(path, path.relative_to(temp))
-
-    with ExitStack() as stack:
-        enter = stack.enter_context
-        archive = enter(ZipFile(enter(cache.open("rb")), mode="r"))
-        print(archive)
+    await ensure_pip(directory)
+    await run_pip(directory, pip_argument)
 
 
 async def get_temp_path() -> Path:
@@ -202,12 +192,12 @@ async def windows2posix(wslpath: str, path: str, encoding: str) -> Path:
 
 
 def get_embed_name(version: Version, architecture: Architecture) -> str:
-    return f"python-{version}-embed-{architecture}.zip"
+    return f"python-{version}-embed-{architecture}"
 
 
 def get_embed_uri(version: Version, architecture: Architecture) -> URI:
     return URI(
-        f"https://www.python.org/ftp/python/{version}/{get_embed_name(version, architecture)}"
+        f"https://www.python.org/ftp/python/{version}/{get_embed_name(version, architecture)}.zip"
     )
 
 
@@ -216,8 +206,13 @@ def download(uri: URI) -> bytes:
         return cast(bytes, response.read())
 
 
+def get_executable(directory: Path) -> str:
+    (executable,) = directory.glob("python.exe")
+    return str(executable)
+
+
 async def ensure_pip(directory: Path) -> None:
-    (executable,) = map(str, directory.rglob("python.exe"))
+    executable = get_executable(directory)
 
     pip_check = await create_subprocess_exec(executable, "-m", "pip")
     await pip_check.wait()
@@ -240,6 +235,13 @@ async def ensure_pip(directory: Path) -> None:
     await pip_install.wait()
     if pip_install.returncode:
         raise CalledProcessError(pip_install.returncode, command)
+
+
+async def run_pip(directory: Path, argument: Sequence[str]) -> None:
+    executable = get_executable(directory)
+    cmd = [executable, "-m", "pip", *argument]
+    process = await create_subprocess_exec(*cmd)
+    await process.wait()
 
 
 CODEPAGE2ENCODING: Final[dict[int, str]] = {
