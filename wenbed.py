@@ -87,7 +87,7 @@ def parse_args() -> "Namespace":
     parser.add_argument("-o", "--output", nargs="?", default=".")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     parser.add_argument("platform")
-    parser.add_argument("pip_argument", nargs="+")
+    parser.add_argument("pip_argument", nargs="*")
 
     return cast("Namespace", parser.parse_args())
 
@@ -154,7 +154,9 @@ async def setup_python_embed(
         await get_pip(python)
 
     await run_subprocess(python, "-m", "pip", "install", "--upgrade", "pip")
-    await run_subprocess(python, "-m", "pip", *pip_argument)
+
+    if pip_argument:
+        await run_subprocess(python, "-m", "pip", *pip_argument)
 
 
 def get_embed_name(version: Version, architecture: Architecture) -> str:
