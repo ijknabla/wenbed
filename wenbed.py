@@ -52,7 +52,7 @@ async def main() -> None:
 
     await gather(
         *(
-            build(Path(args.output), v, a, args.pip_argument)
+            setup_python_embed(Path(args.output), v, a, args.pip_argument)
             for v, a in set(iter_platform(args.platform))
         ),
         return_exceptions=True,
@@ -122,17 +122,27 @@ def iter_platform(
 # python package installation
 
 
-async def build(
+async def setup_python_embed(
     root: Path, version: Version, architecture: Architecture, pip_argument: Sequence[str]
 ) -> None:
-    embed_uri = get_embed_uri(version, architecture)
     directory = root / get_embed_name(version, architecture)
 
-    with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
-        archive.extractall(directory)
+    try:
+        python = get_python_embed_executable(directory)
+    except Exception:
+        embed_uri = get_embed_uri(version, architecture)
+        with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
+            archive.extractall(directory)
 
-    await ensure_pip(directory)
-    await run_pip(directory, pip_argument)
+        python = get_python_embed_executable(directory)
+
+    await run_subprocess(python, "-V")
+
+    if await run_subprocess(python, "-m", "pip", check=False) != 0:
+        await get_pip(python)
+
+    await run_subprocess(python, "-m", "pip", "install", "--upgrade", "pip")
+    await run_subprocess(python, "-m", "pip", *pip_argument)
 
 
 def get_embed_name(version: Version, architecture: Architecture) -> str:
@@ -151,41 +161,20 @@ def download(uri: URI) -> bytes:
 
 
 def get_python_embed_executable(directory: Path) -> str:
-    (executable,) = directory.glob("python.exe")
-    return str(executable)
+    (python,) = directory.glob("python.exe")
+    return str(python)
 
 
-async def ensure_pip(directory: Path) -> None:
-    executable = get_python_embed_executable(directory)
+async def get_pip(python: str) -> None:
+    pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
+    for pth in Path(python).parent.rglob("*._pth"):
+        text = pth.read_text(encoding="utf-8")
+        substituted = pattern.sub(r"\1", text)
+        if text != substituted:
+            pth.write_text(substituted, encoding="utf-8")
 
-    pip_check = await create_subprocess_exec(executable, "-m", "pip")
-    await pip_check.wait()
-    if pip_check.returncode:
-        pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
-        for pth in directory.rglob("*._pth"):
-            text = pth.read_text(encoding="utf-8")
-            substituted = pattern.sub(r"\1", text)
-            if text != substituted:
-                pth.write_text(substituted, encoding="utf-8")
-
-        command = [executable]
-        python = await create_subprocess_exec(*command, stdin=PIPE)
-        await python.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
-        if python.returncode:
-            raise CalledProcessError(python.returncode, command)
-
-    command = [executable, "-m", "pip", "install", "--upgrade", "pip"]
-    pip_install = await create_subprocess_exec(*command)
-    await pip_install.wait()
-    if pip_install.returncode:
-        raise CalledProcessError(pip_install.returncode, command)
-
-
-async def run_pip(directory: Path, argument: Sequence[str]) -> None:
-    executable = get_python_embed_executable(directory)
-    cmd = [executable, "-m", "pip", *argument]
-    process = await create_subprocess_exec(*cmd)
-    await process.wait()
+    async with aopen_subprocess(python, "-", stdin=PIPE) as process:
+        await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
 
 
 async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
