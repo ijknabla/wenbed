@@ -11,7 +11,7 @@ import re
 from asyncio import create_subprocess_exec, gather, run, set_event_loop
 from asyncio.subprocess import Process
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from functools import total_ordering, wraps
 from io import BytesIO
 from pathlib import Path
@@ -186,6 +186,17 @@ async def run_pip(directory: Path, argument: Sequence[str]) -> None:
     cmd = [executable, "-m", "pip", *argument]
     process = await create_subprocess_exec(*cmd)
     await process.wait()
+
+
+async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
+    async with AsyncExitStack() as stack:
+        if not check:
+            stack.enter_context(suppress(CalledProcessError))
+        process = await stack.enter_async_context(aopen_subprocess(program, *args))
+        await process.wait()
+
+    assert process.returncode is not None
+    return process.returncode
 
 
 @asynccontextmanager
