@@ -150,7 +150,7 @@ async def setup_python_embed(
 
     await run_subprocess(python, "-V")
 
-    if await run_subprocess(python, "-m", "pip", check=False) != 0:
+    if await run_subprocess(python, "-m", "pip", "-V", check=False) != 0:
         await get_pip(python)
 
     await run_subprocess(python, "-m", "pip", "install", "--upgrade", "pip")
