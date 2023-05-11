@@ -132,69 +132,6 @@ async def build(
     await run_pip(directory, pip_argument)
 
 
-async def get_temp_path() -> Path:
-    chcp = which("chcp.com")
-    cmd = which("cmd.exe")
-    wslpath = which("wslpath")
-    if chcp is not None and cmd is not None and wslpath is not None:
-        return await get_windows_temp_path(chcp=chcp, cmd=cmd, wslpath=wslpath)
-    else:
-        return Path(gettempdir())
-
-
-async def get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
-    encoding = await get_windows_encoding(chcp)
-    tmps = await gather(
-        *(get_windows_environ(cmd, key, encoding) for key in ["TMPDIR", "TEMP", "TMP"])
-    )
-    for tmp in tmps:
-        if tmp is None:
-            continue
-        path = await windows2posix(wslpath, tmp, encoding)
-        if path.exists():
-            return path
-    raise RuntimeError("Can't find tempdir")
-
-
-async def get_windows_encoding(chcp: str) -> str:
-    command = [chcp]
-    process = await create_subprocess_exec(*command, stdout=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    matched = re.search(rb"\d+", bstdout)
-    if matched is None:
-        raise ValueError(bstdout)
-    codepage = int(matched.group(0))
-    encoding = CODEPAGE2ENCODING[codepage]
-    bstdout.decode(encoding)
-    return encoding
-
-
-async def get_windows_environ(cmd: str, key: str, encoding: str) -> "str | None":
-    expr = f"%{key}%"
-    command = [cmd, "/C", "echo", expr]
-    process = await create_subprocess_exec(*command, stdout=PIPE, stderr=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    stdout = bstdout.rstrip(b"\r\n").decode(encoding)
-    return None if stdout == expr else stdout
-
-
-async def windows2posix(wslpath: str, path: str, encoding: str) -> Path:
-    command = [wslpath, "-u", path]
-    process = await create_subprocess_exec(*command, stdout=PIPE)
-    bstdout, _ = await process.communicate()
-    if process.returncode:
-        raise CalledProcessError(process.returncode, command)
-
-    stdout = bstdout.rstrip(b"\n").decode(encoding)
-    return Path(stdout)
-
-
 def get_embed_name(version: Version, architecture: Architecture) -> str:
     return f"python-{version}-embed-{architecture}"
 
@@ -246,6 +183,72 @@ async def run_pip(directory: Path, argument: Sequence[str]) -> None:
     cmd = [executable, "-m", "pip", *argument]
     process = await create_subprocess_exec(*cmd)
     await process.wait()
+
+
+# unused utilities for windows & wsl
+
+
+async def _get_temp_path() -> Path:
+    chcp = which("chcp.com")
+    cmd = which("cmd.exe")
+    wslpath = which("wslpath")
+    if chcp is not None and cmd is not None and wslpath is not None:
+        return await _get_windows_temp_path(chcp=chcp, cmd=cmd, wslpath=wslpath)
+    else:
+        return Path(gettempdir())
+
+
+async def _get_windows_temp_path(chcp: str, cmd: str, wslpath: str) -> Path:
+    encoding = await _get_windows_encoding(chcp)
+    tmps = await gather(
+        *(_get_windows_environ(cmd, key, encoding) for key in ["TMPDIR", "TEMP", "TMP"])
+    )
+    for tmp in tmps:
+        if tmp is None:
+            continue
+        path = await _windows2posix(wslpath, tmp, encoding)
+        if path.exists():
+            return path
+    raise RuntimeError("Can't find tempdir")
+
+
+async def _get_windows_encoding(chcp: str) -> str:
+    command = [chcp]
+    process = await create_subprocess_exec(*command, stdout=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    matched = re.search(rb"\d+", bstdout)
+    if matched is None:
+        raise ValueError(bstdout)
+    codepage = int(matched.group(0))
+    encoding = CODEPAGE2ENCODING[codepage]
+    bstdout.decode(encoding)
+    return encoding
+
+
+async def _get_windows_environ(cmd: str, key: str, encoding: str) -> "str | None":
+    expr = f"%{key}%"
+    command = [cmd, "/C", "echo", expr]
+    process = await create_subprocess_exec(*command, stdout=PIPE, stderr=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    stdout = bstdout.rstrip(b"\r\n").decode(encoding)
+    return None if stdout == expr else stdout
+
+
+async def _windows2posix(wslpath: str, path: str, encoding: str) -> Path:
+    command = [wslpath, "-u", path]
+    process = await create_subprocess_exec(*command, stdout=PIPE)
+    bstdout, _ = await process.communicate()
+    if process.returncode:
+        raise CalledProcessError(process.returncode, command)
+
+    stdout = bstdout.rstrip(b"\n").decode(encoding)
+    return Path(stdout)
 
 
 CODEPAGE2ENCODING: Final[dict[int, str]] = {
