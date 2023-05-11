@@ -32,3 +32,12 @@ optional arguments:
   -o [OUTPUT], --output [OUTPUT]
   -v, --verbose
 ```
+
+# Example
+
+## Install numpy into python 3.9.0 (64-bit) & 3.10.0 (64-bit)
+
+```
+(Invoke-WebRequest -Uri https://raw.githubusercontent.com/ijknabla/wenbed/main/wenbed.py -UseBasicParsing).Content `
+    | python - 3.9.0-amd64,3.10.0-amd64 -- install numpy
+```
