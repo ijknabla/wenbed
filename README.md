@@ -21,13 +21,13 @@ wget https://raw.githubusercontent.com/ijknabla/wenbed/main/wenbed.py -q -O- \
 # Options & Arguments
 
 ```
-usage: [-h] [-o [OUTPUT]] [-v] platform pip_argument [pip_argument ...]
+usage: wenbed [-h] [-o [OUTPUT]] [-v] platform [pip_argument ...]
 
 positional arguments:
   platform
   pip_argument
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   -o [OUTPUT], --output [OUTPUT]
   -v, --verbose
