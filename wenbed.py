@@ -20,6 +20,7 @@ from subprocess import PIPE, CalledProcessError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any, NamedTuple, NewType, TypeVar, cast
 from urllib.request import urlopen
+from warnings import warn
 from zipfile import ZipFile
 
 if TYPE_CHECKING:
@@ -50,13 +51,24 @@ def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _
 async def main() -> None:
     args = parse_args()
 
-    await gather(
+    results = await gather(
         *(
             setup_python_embed(Path(args.output), v, a, args.pip_argument)
             for v, a in set(iter_platform(args.platform))
         ),
         return_exceptions=True,
     )
+    exceptions = [(i, exc) for i, exc in enumerate(results) if isinstance(exc, BaseException)]
+
+    if exceptions:
+        warning_lines = [
+            f"{len(exceptions)} exception(s) raised!",
+            *(f"[{i}/{len(exceptions)}] {type(exc).__name__}" for i, exc in exceptions),
+            "Raise first exception!",
+        ]
+        warn(Warning("\n".join(warning_lines)))
+        (_, exc), *_ = exceptions
+        raise exc
 
 
 # arguments & options
