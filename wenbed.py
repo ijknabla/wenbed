@@ -44,6 +44,40 @@ def run_coroutine(f_co: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _
     return wrapped
 
 
+@run_coroutine
+async def main() -> None:
+    args = parse_args()
+
+    await gather(
+        *(
+            build(Path(args.output), v, a, args.pip_argument)
+            for v, a in set(iter_platform(args.platform))
+        ),
+        return_exceptions=True,
+    )
+
+
+# arguments & options
+
+if TYPE_CHECKING:
+
+    class Namespace(Protocol):
+        platform: Platform
+        output: str
+        verbose: int
+        pip_argument: Sequence[str]
+
+
+def parse_args() -> "Namespace":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-o", "--output", nargs="?", default=".")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
+    parser.add_argument("platform")
+    parser.add_argument("pip_argument", nargs="+")
+
+    return cast("Namespace", parser.parse_args())
+
+
 class Version(NamedTuple):
     major: int
     minor: int
@@ -66,41 +100,9 @@ class Architecture(enum.Enum):
         return self.value < other.value
 
 
-if TYPE_CHECKING:
-
-    class Namespace(Protocol):
-        platform: Platform
-        output: str
-        verbose: int
-        pip_argument: Sequence[str]
-
-
-@run_coroutine
-async def main() -> None:
-    args = parse_args()
-
-    await gather(
-        *(
-            build(Path(args.output), v, a, args.pip_argument)
-            for v, a in set(iter_platform(args.platform))
-        ),
-        # return_exceptions=True,
-    )
-
-
-def parse_args() -> "Namespace":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-o", "--output", nargs="?", default=".")
-    parser.add_argument("-v", "--verbose", action="count", default=0)
-    parser.add_argument("platform")
-    parser.add_argument("pip_argument", nargs="+")
-
-    return cast("Namespace", parser.parse_args())
-
-
 def iter_platform(
     platform: Platform,
-) -> "Iterator[tuple[Version, Architecture]]":
+) -> Iterator[tuple[Version, Architecture]]:
     version_architecture = re.compile(
         rf"(\d+)\.(\d+)\.(\d+)\-({'|'.join(a.name for a in Architecture)})"
     )
@@ -113,6 +115,9 @@ def iter_platform(
         micro = int(matched.group(3))
         architecture = Architecture[matched.group(4)]
         yield Version(major=major, minor=minor, micro=micro), architecture
+
+
+# python package installation
 
 
 async def build(
