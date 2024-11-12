@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wenbed"
-version = "0.0.2"
+version = "0.1.0.dev0"
 description = ""
 authors = ["ijknabla <ijknabla@gmail.com>"]
 license = "MIT"
