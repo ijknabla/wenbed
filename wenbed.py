@@ -24,7 +24,10 @@ from warnings import warn
 from zipfile import ZipFile
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
     from typing import Final, ParamSpec, Protocol
+
+    from _typeshed import StrOrBytesPath
 
 
 if TYPE_CHECKING:
@@ -191,7 +194,7 @@ async def get_pip(python: str) -> None:
         await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
 
 
-async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
+async def run_subprocess(program: StrOrBytesPath, *args: StrOrBytesPath, check: bool = True) -> int:
     async with AsyncExitStack() as stack:
         if not check:
             stack.enter_context(suppress(CalledProcessError))
@@ -202,29 +205,35 @@ async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
     return process.returncode
 
 
-@asynccontextmanager
-@wraps(create_subprocess_exec)
-async def aopen_subprocess(
-    program: str, *args: str, **kwargs: Any
-) -> AsyncGenerator[Process, None]:
-    process = await create_subprocess_exec(program, *args, **kwargs)
-    try:
-        yield process
-    except Exception:
+def _create2aopen(
+    f: Callable[_P, Coroutine[Any, Any, Process]]
+) -> Callable[_P, AbstractAsyncContextManager[Process]]:
+    @asynccontextmanager
+    @wraps(f)
+    async def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[Process, None]:
+        process = await f(*args, **kwargs)
+        try:
+            yield process
+        except Exception:
+            returncode = process.returncode
+            if returncode is None:
+                process.terminate()
+                await process.wait()
+                raise
+            elif returncode != 0:
+                raise CalledProcessError(returncode, args)  # type: ignore [arg-type]
+
         returncode = process.returncode
         if returncode is None:
             process.terminate()
             await process.wait()
-            raise
         elif returncode != 0:
-            raise CalledProcessError(returncode, [program, *args])
+            raise CalledProcessError(returncode, args)  # type: ignore [arg-type]
 
-    returncode = process.returncode
-    if returncode is None:
-        process.terminate()
-        await process.wait()
-    elif returncode != 0:
-        raise CalledProcessError(returncode, [program, *args])
+    return wrapped
+
+
+aopen_subprocess = _create2aopen(create_subprocess_exec)
 
 
 # unused utilities for windows & wsl
