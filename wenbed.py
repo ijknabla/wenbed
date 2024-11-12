@@ -177,12 +177,14 @@ def download(uri: URI) -> bytes:
         return cast(bytes, response.read())
 
 
-def get_python_embed_executable(directory: Path) -> str:
-    (python,) = directory.glob("python.exe")
-    return str(python)
+def get_python_embed_executable(directory: Path) -> Path:
+    python = directory / "python.exe"
+    if not python.exists():
+        raise FileNotFoundError(python)
+    return python
 
 
-async def get_pip(python: str) -> None:
+async def get_pip(python: Path) -> None:
     pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
     for pth in Path(python).parent.rglob("*._pth"):
         text = pth.read_text(encoding="utf-8")
