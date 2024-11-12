@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
     from typing import Final, ParamSpec, Protocol
 
+    from _typeshed import StrOrBytesPath
+
 
 if TYPE_CHECKING:
     _P = ParamSpec("_P")
@@ -192,7 +194,7 @@ async def get_pip(python: str) -> None:
         await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
 
 
-async def run_subprocess(program: str, *args: str, check: bool = True) -> int:
+async def run_subprocess(program: StrOrBytesPath, *args: StrOrBytesPath, check: bool = True) -> int:
     async with AsyncExitStack() as stack:
         if not check:
             stack.enter_context(suppress(CalledProcessError))
