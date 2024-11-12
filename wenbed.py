@@ -156,6 +156,7 @@ async def setup_python_embed(
 
         executable = get_python_embed_executable(directory)
 
+    python: list[StrOrBytesPath]
     python = [executable]
     if use_wine:
         python.insert(0, "wine")
@@ -163,7 +164,10 @@ async def setup_python_embed(
     await run_subprocess(*python, "-V")
 
     if await run_subprocess(*python, "-m", "pip", "-V", check=False) != 0:
-        await get_pip(*python)
+        for pth in executable.parent.rglob("*._pth"):
+            overwrite_pth(pth)
+        async with aopen_subprocess(*python, "-", stdin=PIPE) as process:
+            await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
 
     await run_subprocess(*python, "-m", "pip", "install", "--upgrade", "pip")
 
@@ -186,21 +190,17 @@ def download(uri: URI) -> bytes:
         return cast(bytes, response.read())
 
 
-def get_python_embed_executable(directory: Path) -> str:
+def get_python_embed_executable(directory: Path) -> Path:
     (python,) = directory.glob("python.exe")
-    return str(python)
+    return python
 
 
-async def get_pip(python: str) -> None:
+def overwrite_pth(pth: Path) -> None:
     pattern = re.compile(r"^#\s*(import\s+site)", re.MULTILINE)
-    for pth in Path(python).parent.rglob("*._pth"):
-        text = pth.read_text(encoding="utf-8")
-        substituted = pattern.sub(r"\1", text)
-        if text != substituted:
-            pth.write_text(substituted, encoding="utf-8")
-
-    async with aopen_subprocess(python, "-", stdin=PIPE) as process:
-        await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
+    text = pth.read_text(encoding="utf-8")
+    substituted = pattern.sub(r"\1", text)
+    if text != substituted:
+        pth.write_text(substituted, encoding="utf-8")
 
 
 async def run_subprocess(program: StrOrBytesPath, *args: StrOrBytesPath, check: bool = True) -> int:
