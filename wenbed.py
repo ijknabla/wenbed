@@ -138,26 +138,30 @@ def iter_platform(
 
 
 async def setup_python_embed(
-    root: Path, version: Version, architecture: Architecture, pip_argument: Sequence[str]
+    root: Path,
+    version: Version,
+    architecture: Architecture,
+    pip_argument: Sequence[str],
+    *,
+    use_wine: bool = False,
 ) -> None:
     directory = root / get_embed_name(version, architecture)
 
     try:
-        python = get_python_embed_executable(directory)
+        executable = get_python_embed_executable(directory)
     except Exception:
         embed_uri = get_embed_uri(version, architecture)
         with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
             archive.extractall(directory)
 
-        python = get_python_embed_executable(directory)
+        executable = get_python_embed_executable(directory)
 
     python: list[StrOrBytesPath]
     python = [executable]
     if use_wine:
         python.insert(0, "wine")
 
-    if await run_subprocess(python, "-m", "pip", "-V", check=False) != 0:
-        await get_pip(python)
+    await run_subprocess(*python, "-V")
 
     if await run_subprocess(*python, "-m", "pip", "-V", check=False) != 0:
         for pth in executable.parent.rglob("*._pth"):
@@ -168,7 +172,7 @@ async def setup_python_embed(
     await run_subprocess(*python, "-m", "pip", "install", "--upgrade", "pip")
 
     if pip_argument:
-        await run_subprocess(python, "-m", "pip", *pip_argument)
+        await run_subprocess(*python, "-m", "pip", *pip_argument)
 
 
 def get_embed_name(version: Version, architecture: Architecture) -> str:
