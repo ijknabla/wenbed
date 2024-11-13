@@ -32,7 +32,8 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:
     _P = ParamSpec("_P")
-_T = TypeVar("_T")
+    _T = TypeVar("_T")
+
 Platform = NewType("Platform", str)
 URI = NewType("URI", str)
 
