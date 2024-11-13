@@ -143,8 +143,12 @@ async def setup_python_embed(
     architecture: Architecture,
     pip_argument: Sequence[str],
     *,
+    download: Callable[[URI], bytes] | None = None,
     use_wine: bool = False,
 ) -> None:
+    if download is None:
+        download = default_download
+
     directory = root / get_embed_name(version, architecture)
 
     try:
@@ -185,7 +189,7 @@ def get_embed_uri(version: Version, architecture: Architecture) -> URI:
     )
 
 
-def download(uri: URI) -> bytes:
+def default_download(uri: URI) -> bytes:
     with urlopen(uri) as response:
         return cast(bytes, response.read())
 
