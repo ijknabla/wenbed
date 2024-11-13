@@ -10,7 +10,7 @@ import enum
 import re
 from asyncio import create_subprocess_exec, gather, run, set_event_loop
 from asyncio.subprocess import Process
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from functools import total_ordering, wraps
 from io import BytesIO
@@ -143,7 +143,7 @@ async def setup_python_embed(
     architecture: Architecture,
     pip_argument: Sequence[str],
     *,
-    download: Callable[[URI], bytes] | None = None,
+    download: Callable[[URI], AsyncIterator[bytes]] | None = None,
     use_wine: bool = False,
 ) -> None:
     if download is None:
@@ -155,7 +155,8 @@ async def setup_python_embed(
         executable = get_python_embed_executable(directory)
     except Exception:
         embed_uri = get_embed_uri(version, architecture)
-        with ZipFile(BytesIO(download(embed_uri)), mode="r") as archive:
+        embed_content = b"".join([line async for line in download(embed_uri)])
+        with ZipFile(BytesIO(embed_content), mode="r") as archive:
             archive.extractall(directory)
 
         executable = get_python_embed_executable(directory)
@@ -171,7 +172,12 @@ async def setup_python_embed(
         for pth in executable.parent.rglob("*._pth"):
             overwrite_pth(pth)
         async with aopen_subprocess(*python, "-", stdin=PIPE) as process:
-            await process.communicate(download(URI("https://bootstrap.pypa.io/get-pip.py")))
+            if TYPE_CHECKING:
+                assert process.stdin is not None
+            async for line in download(URI("https://bootstrap.pypa.io/get-pip.py")):
+                process.stdin.write(line)
+            process.stdin.write_eof()
+            await process.wait()
 
     await run_subprocess(*python, "-m", "pip", "install", "--upgrade", "pip")
 
@@ -189,9 +195,9 @@ def get_embed_uri(version: Version, architecture: Architecture) -> URI:
     )
 
 
-def default_download(uri: URI) -> bytes:
+async def default_download(uri: URI) -> AsyncIterator[bytes]:
     with urlopen(uri) as response:
-        return cast(bytes, response.read())
+        yield cast(bytes, response.read())
 
 
 def get_python_embed_executable(directory: Path) -> Path:
